@@ -4,6 +4,7 @@ import pandas as pd
 from io import BytesIO
 import os
 import re
+import time
 
 # Загрузка данных из файла при запуске
 if os.path.exists('users.csv'):
@@ -96,7 +97,8 @@ def handle_users(message):
         users_text = """
 👥 Управление пользователями:
 Команды:
-/get_names- посмотреть список всех пользователей
+/get_info-вывод всех зарегестрированных аккаунтов
+/get_names- посмотреть список всех пользователей(xls)
 /add_user - добавить пользователя
 /remove_user - удалить пользователя
         """
@@ -254,6 +256,75 @@ def process_remove_user(message):
 
         # Используем сохраненный ID
         bot.send_message(chat_id, f"✅ Пользователь {found_id} удалён")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+
+def escape_markdown(text):
+    escape_chars = '_*[]()~`>#+-=|{}.!'
+    return ''.join(['\\' + char if char in escape_chars else char for char in text])
+
+
+def safe_escape_markdown(text: str) -> str:
+    """Экранирование символов MarkdownV2 с проверкой типа"""
+    if not isinstance(text, str):
+        raise TypeError("Input must be string")
+    return escape_markdown(text)
+
+
+@bot.message_handler(commands=['get_info'])
+def handle_get_info(message: types.Message):
+    try:
+        # Проверка прав администратора
+        if user_roles.get(message.chat.id) != 'admin':
+            bot.reply_to(message, "⛔ Требуются права администратора!")
+            return
+
+        # Проверка на пустую базу
+        if names.empty:
+            bot.reply_to(message, "📭 База данных пуста")
+            return
+
+        # Конфигурация ролей
+        ROLE_CONFIG = {
+            'Administrator': {'emoji': '👑', 'name': 'Администраторы'},
+            'Manager': {'emoji': '💼', 'name': 'Менеджеры'},
+            'Shop': {'emoji': '🏪', 'name': 'Магазины'},
+        }
+
+        grouped = names.groupby('role')
+
+        for role, config in ROLE_CONFIG.items():
+            if role not in grouped.groups:
+                continue
+
+            role_users = grouped.get_group(role)
+
+            # Заголовок роли
+            role_header = (
+                f"{config['emoji']} "
+                f"*{safe_escape_markdown(config['name'])}* "
+                f"[{len(role_users)}]"
+            )
+            bot.send_message(
+                message.chat.id,
+                role_header,
+                parse_mode='MarkdownV2'
+            )
+
+            # Данные пользователей
+            for _, user in role_users.iterrows():
+                user_info = (
+                    f"🆔 ID: `{safe_escape_markdown(str(user['id']))}`\n"
+                    f"📌 Название: {safe_escape_markdown(str(user['name']))}\n"
+                )
+                bot.send_message(
+                    message.chat.id,
+                    user_info,
+                    parse_mode='MarkdownV2'
+                )
+                time.sleep(0.2)
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
