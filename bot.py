@@ -1,5 +1,17 @@
 import telebot
 from telebot import types
+import pandas as pd
+from io import BytesIO
+import os
+import re
+
+# Загрузка данных из файла при запуске
+if os.path.exists('users.csv'):
+    names = pd.read_csv('users.csv')
+else:
+    names = pd.DataFrame(columns=['id', 'role', 'name', 'number'])
+
+names=pd.DataFrame(columns=['id','role','name','number'])#создание DataFrame для хранения id
 #kdkkdkd
 TOKEN = '7791429879:AAEgbCL8bFjQYnb81Rf1s2Hn_F5lRbZ3eKo'
 bot = telebot.TeleBot(TOKEN)
@@ -83,11 +95,8 @@ def handle_users(message):
     if user_roles.get(message.chat.id) == 'admin':
         users_text = """
 👥 Управление пользователями:
-1. Иванов Иван (A-123) - Админ
-2. Петров Петр (S-456) - Магазин
-3. Сидорова Мария (M-789) - Менеджер
-
 Команды:
+/get_names- посмотреть список всех пользователей
 /add_user - добавить пользователя
 /remove_user - удалить пользователя
         """
@@ -96,104 +105,160 @@ def handle_users(message):
         bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права администратора")
 
 user_data = {}
+def create_and_add_id(role, name):
+    roles_index = {'Developer': 'T', 'Administrator': 'A', 'Manager': 'M', 'Shop': 'S'}  # Заглавные буквы
+    k = roles_index[role]
+
+    existing = names[names['role'] == role]
+    if existing.empty:
+        n = 1
+    else:
+        n = existing['number'].max() + 1
+
+    numeric_part = str(n).zfill(5)
+    new_id = f"{k}{numeric_part}"  # Теперь ID с заглавной буквы
+    names.loc[len(names)] = [new_id, role, name, n]
+    names.to_csv('users.csv', index=False)
+    return new_id
+def clean_user_data(chat_id):
+    """Удаляем временные данные пользователя"""
+    if chat_id in user_data:
+        del user_data[chat_id]
 @bot.message_handler(commands=['add_user'])
 def handle_add_user(message):
     if user_roles.get(message.chat.id) == 'admin':
-        # Создаем клавиатуру для выбора роли
-        markup = types.ReplyKeyboardMarkup(
-            one_time_keyboard=True,
-            resize_keyboard=True,
-            row_width=2
-        )
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True, row_width=2)
         markup.add('Shop', 'Administrator', 'Manager')
 
-        bot.send_message(
-            message.chat.id,
-            "🔽 Выберите роль из кнопок ниже:",
-            reply_markup=markup
-        )
+        bot.send_message(message.chat.id, "🔽 Выберите роль из кнопок ниже:", reply_markup=markup)
         bot.register_next_step_handler(message, process_role_step)
     else:
-        bot.send_message(
-            message.chat.id,
-            "⛔ Доступ запрещён! Требуются права администратора"
-        )
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права администратора")
 
 
 def process_role_step(message):
+    chat_id = message.chat.id
     try:
         if message.content_type != 'text':
             raise ValueError("Некорректный тип сообщения")
 
-        chat_id = message.chat.id
-        role = message.text.strip().lower()
-
-        # Определяем префикс для ID
-        role_prefix_mapping = {
-            'shop': 's',
-            'administrator': 'a',
-            'manager': 'm'
+        role_mapping = {
+            'shop': 'Shop',
+            'administrator': 'Administrator',
+            'manager': 'Manager'
         }
-        role_prefix = role_prefix_mapping.get(role, 'x')
+        input_role = message.text.strip().lower()
+        role_name = role_mapping.get(input_role)
 
-        # Сохраняем префикс
-        user_data[chat_id] = {'role': role_prefix}
+        if not role_name:
+            raise ValueError("Некорректная роль")
 
-        # Убираем клавиатуру и запрашиваем текст
-        bot.send_message(
-            chat_id,
-            "✏️ Введите название точки:",
-            reply_markup=types.ReplyKeyboardRemove()
-        )
+        user_data[chat_id] = {'role': role_name}
+        bot.send_message(chat_id, "✏️ Введите название точки:", reply_markup=types.ReplyKeyboardRemove())
         bot.register_next_step_handler(message, process_location_step)
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
-        clean_user_data(chat_id)
-
-
+        clean_user_data(chat_id)  # Очистка только при ошибке
 def process_location_step(message):
+    chat_id = message.chat.id
     try:
         if message.content_type != 'text':
             raise ValueError("Название точки должно быть текстом")
 
-        chat_id = message.chat.id
         location = message.text.strip()
-
         if len(location) < 2:
             raise ValueError("Слишком короткое название точки")
 
-        # Получаем сохраненные данные
         role_data = user_data.get(chat_id, {})
-        role_prefix = role_data.get('role', 'x')
+        role_name = role_data.get('role')
 
-        # Генерируем уникальный ID
-        unique_id = generate_unique_id(role_prefix)
-
-        bot.send_message(
-            chat_id,
-            f"✅ Успешное создание!\n"
-            f"🏷 ID: {unique_id}\n"
-            f"📍 Точка: {location}"
-        )
+        unique_id = create_and_add_id(role_name, location)
+        bot.send_message(chat_id, f"✅ Успешное создание!\n🏷 ID: {unique_id}\n📍 Точка: {location}")
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
     finally:
-        clean_user_data(chat_id)
+        clean_user_data(chat_id)  # Всегда очищаем после обработки
 
 
-def clean_user_data(chat_id):
-    if chat_id in user_data:
-        del user_data[chat_id]
+@bot.message_handler(commands=['get_names'])
+def send_names_excel(message):
+    try:
+        if user_roles.get(message.chat.id) != 'admin':
+            bot.reply_to(message, "⛔ Требуются права администратора!")
+            return
+
+        if names.empty:
+            bot.reply_to(message, "📭 База данных пуста")
+            return
+
+        output = BytesIO()
+
+        # Используем правильный параметр sheet_name
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            names.to_excel(
+                excel_writer=writer,
+                sheet_name='Users',  # Правильное написание
+                index=False
+            )
+
+        output.seek(0)
+        bot.send_document(
+            chat_id=message.chat.id,
+            document=output,
+            caption='📊 Полная база данных пользователей',
+            visible_file_name='users_database.xlsx'
+        )
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка при генерации файла: {str(e)}")
+    finally:
+        output.close() if 'output' in locals() else None
 
 
-def generate_unique_id(prefix):
-    # Генерация 4-значного числа с ведущими нулями
-    random_part = f"{1111}"
-    return f"{prefix}{random_part}"
+@bot.message_handler(commands=['remove_user'])
+def handle_remove_user(message):
+    if user_roles.get(message.chat.id) == 'admin':
+        bot.send_message(
+            message.chat.id,
+            "✏️ Введите ID пользователя для удаления:",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        bot.register_next_step_handler(message, process_remove_user)
+    else:
+        bot.send_message(message.chat.id, "⛔ Требуются права администратора!")
 
+
+def process_remove_user(message):
+    try:
+        chat_id = message.chat.id
+        raw_input = message.text.strip()
+        user_id_to_remove = raw_input[0].upper() + raw_input[1:].lower()
+
+        if not re.match(r'^[A-Za-z]\d{5}$', user_id_to_remove):
+            raise ValueError("Неверный формат ID. Пример: A12345")
+
+        # Поиск без учета регистра
+        mask = names['id'].str.upper() == user_id_to_remove.upper()
+
+        if not mask.any():
+            raise ValueError("Пользователь с таким ID не найден")
+
+        # Получаем ID перед удалением
+        found_id = names.loc[mask, 'id'].values[0]
+
+        # Удаляем запись
+        names.drop(names[mask].index, inplace=True)
+        names.to_csv('users.csv', index=False)
+
+        # Используем сохраненный ID
+        bot.send_message(chat_id, f"✅ Пользователь {found_id} удалён")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 #Функции менеджера
+
 @bot.message_handler(commands=['plan'])
 def handle_users(message):
     if user_roles.get(message.chat.id) == 'manager':
