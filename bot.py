@@ -5,15 +5,19 @@ from io import BytesIO
 import os
 import re
 import time
+import tempfile
+from functools import wraps
 
 # Загрузка данных из файла при запуске
 if os.path.exists('users.csv'):
     names = pd.read_csv('users.csv')
 else:
     names = pd.DataFrame(columns=['id', 'role', 'name', 'number'])
+if os.path.exists('shopofmanagers.csv'):
+    shopofmanagers = pd.read_csv('shopofmanagers.csv')
+else:
+    shopofmanagers = pd.DataFrame(columns=['id_manager', 'name_manager', 'id_shop', 'name_shop'])
 
-names=pd.DataFrame(columns=['id','role','name','number'])#создание DataFrame для хранения id
-#kdkkdkd
 TOKEN = '7791429879:AAEgbCL8bFjQYnb81Rf1s2Hn_F5lRbZ3eKo'
 bot = telebot.TeleBot(TOKEN)
 
@@ -21,7 +25,7 @@ bot = telebot.TeleBot(TOKEN)
 user_states = {}
 user_roles = {}  # Новый словарь для хранения ролей
 shop_data = {}    # Словарь для временного хранения данных магазина
-
+user_chat_id={}
 
 @bot.message_handler(commands=['start', 'help'])
 def welcome_message(message):
@@ -38,45 +42,301 @@ def welcome_message(message):
 
 
 @bot.message_handler(commands=['id'])
-def ask_for_id(message):
-    msg = bot.send_message(message.chat.id, "Введите ваш ID:")
-    user_states[message.chat.id] = 'awaiting_id'
-    bot.register_next_step_handler(msg, process_id)
+def handle_id_command(message):
+    msg = bot.send_message(message.chat.id,
+                           "🔑 Введите ваш ID в формате: Префикс (A/M/S) + 5 цифр\nПример: A00123 или M00001")
+    bot.register_next_step_handler(msg, process_user_id)
 
 
-def process_id(message):
+def process_user_id(message):
     try:
-        user_id = message.text.strip()
+        user_id = message.text.strip().upper()
+        role_mapping = {'A': 'admin', 'M': 'manager', 'S': 'shop'}
 
-        if not user_id:
-            raise ValueError("ID не может быть пустым")
+        # Валидация формата ID
+        if len(user_id) != 6 or user_id[0] not in role_mapping or not user_id[1:].isdigit():
+            bot.reply_to(message, "❌ Некорректный формат ID. Пример: A00123")
+            return
 
-        first_char = user_id[0].upper()
+        # Поиск пользователя в базе
+        user_row = names.loc[names['id'] == user_id]
 
-        if first_char == 'A':
-            role = 'admin'
-            response = "✅ Активирован режим администрирования\nДоступные команды:\n/stats - статистика\n/users - управление пользователями"
-        elif first_char == 'S':
-            role = 'shop'
-            response = "✅ Режим магазина\nДоступные команды:\n/report - сдать отчёт"
-        elif first_char == 'M':
-            role = 'manager'
-            response = "✅ Режим менеджера\nДоступные команды:\n/plan - установить план\n/statm - получить статистику"
-        else:
-            raise ValueError("ID должен начинаться с A, S или M")
+        if user_row.empty:
+            bot.reply_to(message, "⛔ Пользователь с таким ID не зарегистрирован в системе")
+            return
 
-        # Сохраняем роль пользователя
+        # Определение и сохранение роли
+        role_prefix = user_id[0]
+        role = role_mapping.get(role_prefix)
+
         user_roles[message.chat.id] = role
-        bot.send_message(message.chat.id, response)
+        user_chat_id[message.chat.id]=user_id
+
+        # Формирование ответа
+        responses = {
+            'admin': "👑 Администратор\nДоступные команды:\n/stats - статистика\n/users - управление пользователями",
+            'manager': "📊 Менеджер\nДоступные команды:\n/plan - установить план\n/statm - статистика\n/my_shops-ваши точки",
+            'shop': "🏪 Магазин\nДоступные команды:\n/report - сдать отчет"
+        }
+
+        bot.send_message(message.chat.id, f"✅ Авторизация успешна!\n{responses[role]}")
+
+    except KeyError:
+        bot.reply_to(message, "⚠️ Неизвестный тип аккаунта. Обратитесь к администратору")
+    except Exception as e:
+        bot.reply_to(message, f"🚨 Критическая ошибка: {str(e)}")
+# Функции для администратора
+def admin_required(func):
+    @wraps(func)
+    def wrapper(message, *args, **kwargs):
+        if user_roles.get(message.chat.id) != 'admin':
+            bot.reply_to(message, "⛔ Требуется роль администратора!")
+            return
+        return func(message, *args, **kwargs)
+
+    return wrapper
+
+
+def error_handler(func):
+    @wraps(func)
+    def wrapper(message, *args, **kwargs):
+        try:
+            return func(message, *args, **kwargs)
+        except Exception as e:
+            handle_error(message, e)
+
+    return wrapper
+
+
+def validate_id(id_str: str, role: str = None) -> str:
+    """Валидация ID с обязательной заглавной буквой в префиксе"""
+    if len(id_str) != 6:
+        raise ValueError(f"Некорректная длина ID: {len(id_str)} (требуется 6 символов)")
+
+    prefix = id_str[0]
+    number_part = id_str[1:]
+
+    # Проверка префикса
+    valid_prefixes = {'A', 'M', 'S'}
+    if prefix not in valid_prefixes:
+        raise ValueError(f"Неверный префикс. Допустимые: {', '.join(valid_prefixes)}")
+
+    # Проверка роли
+    if role:
+        expected_prefix = role[0].upper()
+        if prefix != expected_prefix:
+            raise ValueError(f"Для роли {role} требуется префикс {expected_prefix}")
+
+    # Проверка числовой части
+    if not number_part.isdigit():
+        raise ValueError("После префикса должны быть 5 цифр")
+
+    return id_str  # Возвращаем оригинальный ID
+
+
+def find_user(id_str: str, role: str) -> pd.Series:
+    """Поиск пользователя с учетом регистра"""
+    # Исправлено название столбца 'id' вместо 'user id'
+    df = names[
+        (names['id'] == id_str) &
+        (names['role'].str.upper() == role.upper())
+        ]
+
+    if df.empty:
+        raise ValueError(f"{role.capitalize()} с ID {id_str} не найден")
+
+    return df.iloc[0]
+
+
+# endregion
+
+# region Обработчики команд
+@bot.message_handler(commands=['link_shop_to_manager'])
+@admin_required
+@error_handler
+def start_linking(message):
+    user_data[message.chat.id] = {'step': 'manager'}
+    bot.send_message(message.chat.id, "🔗 Введите ID менеджера (формат: M12345):")
+
+
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'manager')
+@admin_required
+@error_handler
+def process_manager(message):
+    chat_id = message.chat.id
+    try:
+        raw_input = message.text.strip().upper()
+        manager_id = validate_id(raw_input, 'manager')
+        manager = find_user(manager_id, 'Manager')
+
+        user_data[chat_id] = {
+            'manager': {
+                'id': manager_id,
+                'name': manager['name']
+            },
+            'shops': [],
+            'step': 'shop'
+        }
+        bot.send_message(chat_id, "🏪 Введите ID магазина (формат: S12345):")
+
+    except ValueError as ve:
+        bot.send_message(chat_id, f"❌ {str(ve)}")
+        start_linking(message)
+
+
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'shop')
+@admin_required
+@error_handler
+def process_shop(message):
+    chat_id = message.chat.id
+    try:
+        raw_input = message.text.strip().upper()
+        shop_id = validate_id(raw_input, 'shop')
+        shop = find_user(shop_id, 'Shop')
+
+        # Проверка существующей связи
+        exists = not shopofmanagers[
+            (shopofmanagers['id_manager'] == user_data[chat_id]['manager']['id']) &
+            (shopofmanagers['id_shop'] == shop_id)
+            ].empty
+
+        if exists:
+            raise ValueError("Связь уже существует")
+
+        user_data[chat_id]['shops'].append({
+            'id': shop_id,
+            'name': shop['name']
+        })
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("➕ Добавить ещё магазин", "✅ Завершить привязку")
+
+        bot.send_message(
+            chat_id,
+            f"✅ Успешно привязано к:\n{shop['name']}",
+            reply_markup=markup
+        )
+        user_data[chat_id]['step'] = 'confirmation'
+
+    except ValueError as ve:
+        bot.send_message(chat_id, f"❌ {str(ve)}\nПовторите ввод ID магазина:")
+
+
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'confirmation')
+@admin_required
+@error_handler
+def finalize_linking(message):
+    chat_id = message.chat.id
+    data = user_data[chat_id]
+
+    if message.text == '➕ Добавить ещё магазин':
+        data['step'] = 'shop'
+        bot.send_message(chat_id, "🏪 Введите ID следующего магазина:")
+        return
+
+    # Сохранение всех связей
+    new_entries = [{
+        'id_manager': data['manager']['id'],
+        'name_manager': data['manager']['name'],
+        'id_shop': shop['id'],
+        'name_shop': shop['name']
+    } for shop in data['shops']]
+
+    try:
+        pd.DataFrame(new_entries).to_csv(
+            'shopofmanagers.csv',
+            mode='a',
+            header=not pd.io.common.file_exists('shopofmanagers.csv'),
+            index=False
+        )
+
+        report = [
+                     f"🔗 Создано связей: {len(new_entries)}",
+                     f"👨💼 Менеджер: {data['manager']['name']}",
+                     "🏪 Магазины:"
+                 ] + [f"• {shop['name']}" for shop in data['shops']]
+
+        bot.send_message(
+            chat_id,
+            "\n".join(report),
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+
+    finally:
+        if chat_id in user_data:
+            del user_data[chat_id]
+
+
+def handle_error(message, error):
+    chat_id = message.chat.id
+    error_msg = [
+        "⚠️ Произошла ошибка:",
+        f"• Тип: {type(error).__name__}",
+        f"• Описание: {str(error)}"
+    ]
+
+    bot.send_message(chat_id, "\n".join(error_msg))
+    bot.send_message(chat_id, "🔄 Сессия сброшена. Начните заново.")
+
+    if chat_id in user_data:
+        del user_data[chat_id]
+
+
+@bot.message_handler(commands=['get_links'])
+@admin_required
+@error_handler
+def get_links_command(message):
+    """
+    Отправка файла связей в формате Excel
+    """
+    chat_id = message.chat.id
+
+    try:
+        if shopofmanagers.empty:
+            bot.send_message(chat_id, "📭 База связей пуста")
+            return
+
+        expected_columns = ['id_manager', 'name_manager', 'id_shop', 'name_shop']
+        if not all(col in shopofmanagers.columns for col in expected_columns):
+            missing = set(expected_columns) - set(shopofmanagers.columns)
+            raise ValueError(f"Отсутствуют колонки: {', '.join(missing)}")
+
+        report_data = shopofmanagers[expected_columns]
+
+        with tempfile.NamedTemporaryFile(mode='w+b', suffix='.xlsx', delete=False) as tmp:
+            with pd.ExcelWriter(tmp.name, engine='xlsxwriter') as writer:
+                report_data.to_excel(
+                    writer,
+                    sheet_name='Связи',
+                    index=False,
+                    header=['ID менеджера', 'Имя менеджера', 'ID магазина', 'Название магазина']
+                )
+
+                worksheet = writer.sheets['Связи']
+                for col_num, col_name in enumerate(expected_columns):
+                    max_len = max(
+                        report_data[col_name].astype(str).map(len).max(),
+                        len(col_name)
+                    ) + 2
+                    worksheet.set_column(col_num, col_num, max_len)
+
+            # Исправлено здесь: data → document
+            with open(tmp.name, 'rb') as file:
+                bot.send_document(
+                    chat_id=chat_id,
+                    document=file,  # Правильное имя параметра
+                    caption='🔗 Актуальные связи менеджеров и магазинов',
+                    visible_file_name='Manager_Shop_Links.xlsx'
+                )
 
     except Exception as e:
-        error_message = f"❌ Ошибка: {str(e)}"
-        bot.send_message(message.chat.id, error_message)
-
-    user_states.pop(message.chat.id, None)
-
-
-# Функции для администратора
+        bot.send_message(chat_id, f"⚠️ Ошибка генерации отчета: {str(e)}")
+    finally:
+        if 'tmp' in locals():
+            try:
+                os.remove(tmp.name)
+            except:
+                pass
 @bot.message_handler(commands=['stats'])
 def handle_stats(message):
     if user_roles.get(message.chat.id) == 'admin':
@@ -97,10 +357,12 @@ def handle_users(message):
         users_text = """
 👥 Управление пользователями:
 Команды:
-/get_info-вывод всех зарегестрированных аккаунтов
+/get_info - вывод всех зарегестрированных аккаунтов
 /get_names- посмотреть список всех пользователей(xls)
 /add_user - добавить пользователя
 /remove_user - удалить пользователя
+/link_shop_to_manager - привязка магазина к менеджеру
+/get_links - получение файла со связями
         """
         bot.send_message(message.chat.id, users_text)
     else:
@@ -328,8 +590,50 @@ def handle_get_info(message: types.Message):
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
-#Функции менеджера
 
+#Функции менеджера
+@bot.message_handler(commands=['my_shops'])
+def handle_my_shops(message):
+    user_tg_id = message.chat.id  # Telegram ID пользователя (число)
+
+    # Проверка роли
+    if user_roles.get(user_tg_id) != 'manager':
+        bot.send_message(user_tg_id, "⛔ Доступ запрещён! Требуются права менеджера")
+        return
+
+    # Получаем user_id менеджера (например, "M00001") из словаря user_chat_id
+    try:
+        manager_id = user_chat_id[user_tg_id]  # Здесь получаем "M00001"
+    except KeyError:
+        bot.send_message(user_tg_id, "❌ Ваш аккаунт менеджера не привязан к системе")
+        return
+
+    try:
+        # Фильтруем магазины по manager_id ("M00001")
+        if isinstance(shopofmanagers, dict):
+            manager_shops = [shop for shop in shopofmanagers.values() if str(shop.get('id_manager')) == manager_id]
+        elif hasattr(shopofmanagers, 'iterrows'):  # pandas DataFrame
+            manager_shops = [row.to_dict() for _, row in shopofmanagers.iterrows() if
+                             str(row['id_manager']) == manager_id]
+        else:  # Список или другой тип
+            manager_shops = [shop for shop in shopofmanagers if str(shop.get('id_manager')) == manager_id]
+
+        # Формируем ответ
+        if not manager_shops:
+            bot.send_message(user_tg_id, "ℹ️ К вам не привязано ни одного магазина")
+            return
+
+        response = "🏪 Ваши магазины:\n\n"
+        for i, shop in enumerate(manager_shops, 1):
+            response += (
+                f"{i}. ID магазина: {shop.get('id_shop', 'N/A')}\n"
+                f"   Название: {shop.get('name_shop', 'N/A')}\n\n"
+            )
+
+        bot.send_message(user_tg_id, response)
+
+    except Exception as e:
+        bot.send_message(user_tg_id, f"❌ Ошибка при получении списка магазинов: {str(e)}")
 @bot.message_handler(commands=['plan'])
 def handle_users(message):
     if user_roles.get(message.chat.id) == 'manager':
