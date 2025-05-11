@@ -7,6 +7,7 @@ import re
 import time
 import tempfile
 from functools import wraps
+import datetime
 import threading
 
 # Загрузка данных из файла при запуске
@@ -18,6 +19,10 @@ if os.path.exists('shopofmanagers.csv'):
     shopofmanagers = pd.read_csv('shopofmanagers.csv')
 else:
     shopofmanagers = pd.DataFrame(columns=['id_manager', 'name_manager', 'id_shop', 'name_shop'])
+if os.path.exists('plans.csv'):
+    plans_df = pd.read_csv('plans.csv')
+else:
+    plans_df = pd.DataFrame(columns=['shop_id', 'shop_name', 'plan_amount', 'manager_id', 'date'])
 
 TOKEN = '7791429879:AAEgbCL8bFjQYnb81Rf1s2Hn_F5lRbZ3eKo'
 bot = telebot.TeleBot(TOKEN)
@@ -311,18 +316,21 @@ def get_links_command(message):
     chat_id = message.chat.id
 
     try:
-        if shopofmanagers.empty:
+        # Всегда читаем актуальный файл
+        if not os.path.exists('shopofmanagers.csv'):
             bot.send_message(chat_id, "📭 База связей пуста")
             return
 
+        df = pd.read_csv('shopofmanagers.csv')
+
         expected_columns = ['id_manager', 'name_manager', 'id_shop', 'name_shop']
-        if not all(col in shopofmanagers.columns for col in expected_columns):
-            missing = set(expected_columns) - set(shopofmanagers.columns)
+        if not all(col in df.columns for col in expected_columns):
+            missing = set(expected_columns) - set(df.columns)
             raise ValueError(f"Отсутствуют колонки: {', '.join(missing)}")
 
-        report_data = shopofmanagers[expected_columns]
+        report_data = df[expected_columns]
 
-        with tempfile.NamedTemporaryFile(mode='w+b', suffix='.xlsx', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
             with pd.ExcelWriter(tmp.name, engine='xlsxwriter') as writer:
                 report_data.to_excel(
                     writer,
@@ -339,11 +347,10 @@ def get_links_command(message):
                     ) + 2
                     worksheet.set_column(col_num, col_num, max_len)
 
-            # Исправлено здесь: data → document
             with open(tmp.name, 'rb') as file:
                 bot.send_document(
                     chat_id=chat_id,
-                    document=file,  # Правильное имя параметра
+                    document=file,
                     caption='🔗 Актуальные связи менеджеров и магазинов',
                     visible_file_name='Manager_Shop_Links.xlsx'
                 )
@@ -356,7 +363,6 @@ def get_links_command(message):
                 os.remove(tmp.name)
             except:
                 pass
-
 
 
 #Функция stats
@@ -748,19 +754,181 @@ def handle_my_shops(message):
 
     except Exception as e:
         bot.send_message(user_tg_id, f"❌ Ошибка при получении списка магазинов: {str(e)}")
-@bot.message_handler(commands=['plan'])
-def handle_users(message):
-    if user_roles.get(message.chat.id) == 'manager':
-        users_text = """
-Для того, чтобы установить план вводите размер плана
-Далее, сверевшись с верностью введённых данных
-Нажмите ДА✅
-Иначе НЕТ⛔
-Название точки прописывается автоматически
-        """
-        bot.send_message(message.chat.id, users_text)
-    else:
+@bot.message_handler(commands=['set_plan'])
+def handle_set_plan(message):
+    if user_roles.get(message.chat.id) != 'manager':
         bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права менеджера")
+        return
+
+    try:
+        manager_id = user_chat_id[message.chat.id]
+        # Получаем список магазинов менеджера
+        manager_shops = shopofmanagers[shopofmanagers['id_manager'] == manager_id]
+
+        if manager_shops.empty:
+            bot.send_message(message.chat.id, "ℹ️ К вам не привязано ни одного магазина")
+            return
+
+        # Создаем клавиатуру с магазинами
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+        for _, shop in manager_shops.iterrows():
+            markup.add(f"{shop['id_shop']} - {shop['name_shop']}")
+
+        msg = bot.send_message(
+            message.chat.id,
+            "🏪 Выберите магазин для установки плана:",
+            reply_markup=markup
+        )
+        bot.register_next_step_handler(msg, process_shop_selection_for_plan)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+def process_shop_selection_for_plan(message):
+    try:
+        shop_info = message.text.split(' - ')[0]
+        shop_id = shop_info.strip()
+
+        # Проверяем что магазин существует и принадлежит менеджеру
+        manager_id = user_chat_id[message.chat.id]
+        valid_shops = shopofmanagers[
+            (shopofmanagers['id_manager'] == manager_id) &
+            (shopofmanagers['id_shop'] == shop_id)
+        ]
+
+        if valid_shops.empty:
+            bot.send_message(message.chat.id, "❌ Магазин не найден или не принадлежит вам")
+            return
+
+        shop_name = valid_shops.iloc[0]['name_shop']
+
+        # Сохраняем данные во временном хранилище
+        user_data[message.chat.id] = {
+            'action': 'set_plan',
+            'shop_id': shop_id,
+            'shop_name': shop_name
+        }
+
+        bot.send_message(
+            message.chat.id,
+            f"✏️ Введите сумму плана для магазина {shop_name}:",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        bot.register_next_step_handler(message, process_plan_amount)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+def process_plan_amount(message):
+    try:
+        amount = float(message.text.strip())
+        chat_id = message.chat.id
+        user_info = user_data.get(chat_id, {})
+
+        if user_info.get('action') != 'set_plan':
+            raise ValueError("Неверный контекст операции")
+
+        shop_id = user_info['shop_id']
+        shop_name = user_info['shop_name']
+        manager_id = user_chat_id[chat_id]
+
+        # Добавляем или обновляем план
+        global plans_df
+        if shop_id in plans_df['shop_id'].values:
+            plans_df.loc[plans_df['shop_id'] == shop_id, ['plan_amount', 'date']] = [amount, datetime.datetime.now().date()]
+        else:
+            new_plan = pd.DataFrame([{
+                'shop_id': shop_id,
+                'shop_name': shop_name,
+                'plan_amount': amount,
+                'manager_id': manager_id,
+                'date': datetime.datetime.now().date()
+            }])
+            plans_df = pd.concat([plans_df, new_plan], ignore_index=True)
+
+        # Сохраняем в файл
+        plans_df.to_csv('plans.csv', index=False)
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("✅ Да", "❌ Нет")
+
+        bot.send_message(
+            chat_id,
+            f"Подтвердите установку плана:\n"
+            f"🏪 Магазин: {shop_name}\n"
+            f"💰 Сумма плана: {amount} руб.\n\n"
+            f"Всё верно?",
+            reply_markup=markup
+        )
+        bot.register_next_step_handler(message, confirm_plan_setting)
+
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Введите корректную сумму (число)")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+def confirm_plan_setting(message):
+    try:
+        chat_id = message.chat.id
+        if message.text == '✅ Да':
+            bot.send_message(
+                chat_id,
+                "✅ План успешно установлен!",
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+        else:
+            bot.send_message(
+                chat_id,
+                "❌ Установка плана отменена",
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+    finally:
+        if chat_id in user_data:
+            del user_data[chat_id]
+
+@bot.message_handler(commands=['get_plans'])
+def handle_get_plans(message):
+    if user_roles.get(message.chat.id) != 'manager':
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права менеджера")
+        return
+
+    try:
+        manager_id = user_chat_id[message.chat.id]
+
+        # Получаем планы только для магазинов этого менеджера
+        manager_shops = shopofmanagers[shopofmanagers['id_manager'] == manager_id]['id_shop']
+        manager_plans = plans_df[plans_df['shop_id'].isin(manager_shops)]
+
+        if manager_plans.empty:
+            bot.send_message(message.chat.id, "ℹ️ У вас нет установленных планов для магазинов")
+            return
+
+        # Создаем Excel файл
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            manager_plans.to_excel(writer, sheet_name='Plans', index=False)
+
+            # Форматирование
+            worksheet = writer.sheets['Plans']
+            for i, col in enumerate(manager_plans.columns):
+                width = max(manager_plans[col].astype(str).map(len).max(), len(col)) + 2
+                worksheet.set_column(i, i, width)
+
+        output.seek(0)
+
+        bot.send_document(
+            message.chat.id,
+            output,
+            caption='📊 Планы для ваших магазинов',
+            visible_file_name=f'plans_{datetime.datetime.now().date()}.xlsx'
+        )
+        output.close()
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка при создании отчета: {str(e)}")
 
 @bot.message_handler(commands=['statm'])
 def handle_users(message):
@@ -774,6 +942,31 @@ def handle_users(message):
         bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права менеджера")
 
 # Функции для магазина
+@bot.message_handler(commands=['my_plan'])
+def handle_my_plan(message):
+    if user_roles.get(message.chat.id) != 'shop':
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права магазина")
+        return
+
+    try:
+        shop_id = user_chat_id[message.chat.id]
+        shop_plan = plans_df[plans_df['shop_id'] == shop_id]
+
+        if shop_plan.empty:
+            bot.send_message(message.chat.id, "ℹ️ Для вашего магазина не установлен план")
+            return
+
+        plan = shop_plan.iloc[0]
+        bot.send_message(
+            message.chat.id,
+            f"📊 План для вашего магазина:\n\n"
+            f"🏪 Магазин: {plan['shop_name']}\n"
+            f"💰 Сумма плана: {plan['plan_amount']} руб.\n"
+            f"📅 Дата установки: {plan['date']}"
+        )
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
 @bot.message_handler(commands=['report'])
 def handle_report(message):
     if user_roles.get(message.chat.id) == 'shop':
