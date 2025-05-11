@@ -7,6 +7,7 @@ import re
 import time
 import tempfile
 from functools import wraps
+import threading
 
 # Загрузка данных из файла при запуске
 if os.path.exists('users.csv'):
@@ -26,7 +27,7 @@ user_states = {}
 user_roles = {}  # Новый словарь для хранения ролей
 shop_data = {}    # Словарь для временного хранения данных магазина
 user_chat_id={}
-
+#Стартовые функции
 @bot.message_handler(commands=['start', 'help'])
 def welcome_message(message):
     welcome_text = """
@@ -41,13 +42,15 @@ def welcome_message(message):
     bot.send_message(message.chat.id, welcome_text)
 
 
+
+
+
+
 @bot.message_handler(commands=['id'])
 def handle_id_command(message):
     msg = bot.send_message(message.chat.id,
                            "🔑 Введите ваш ID в формате: Префикс (A/M/S) + 5 цифр\nПример: A00123 или M00001")
     bot.register_next_step_handler(msg, process_user_id)
-
-
 def process_user_id(message):
     try:
         user_id = message.text.strip().upper()
@@ -85,7 +88,15 @@ def process_user_id(message):
         bot.reply_to(message, "⚠️ Неизвестный тип аккаунта. Обратитесь к администратору")
     except Exception as e:
         bot.reply_to(message, f"🚨 Критическая ошибка: {str(e)}")
+
+
+
+
+
 # Функции для администратора
+
+
+#Декораторы
 def admin_required(func):
     @wraps(func)
     def wrapper(message, *args, **kwargs):
@@ -95,6 +106,9 @@ def admin_required(func):
         return func(message, *args, **kwargs)
 
     return wrapper
+
+
+
 
 
 def error_handler(func):
@@ -148,9 +162,10 @@ def find_user(id_str: str, role: str) -> pd.Series:
     return df.iloc[0]
 
 
-# endregion
 
-# region Обработчики команд
+
+
+#Функция link_shop_to_manager
 @bot.message_handler(commands=['link_shop_to_manager'])
 @admin_required
 @error_handler
@@ -241,7 +256,6 @@ def finalize_linking(message):
         'id_shop': shop['id'],
         'name_shop': shop['name']
     } for shop in data['shops']]
-
     try:
         pd.DataFrame(new_entries).to_csv(
             'shopofmanagers.csv',
@@ -282,6 +296,11 @@ def handle_error(message, error):
         del user_data[chat_id]
 
 
+
+
+
+
+#Функция get_links
 @bot.message_handler(commands=['get_links'])
 @admin_required
 @error_handler
@@ -337,6 +356,10 @@ def get_links_command(message):
                 os.remove(tmp.name)
             except:
                 pass
+
+
+
+#Функция stats
 @bot.message_handler(commands=['stats'])
 def handle_stats(message):
     if user_roles.get(message.chat.id) == 'admin':
@@ -351,6 +374,11 @@ def handle_stats(message):
         bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права администратора")
 
 
+
+
+
+
+#Функция users
 @bot.message_handler(commands=['users'])
 def handle_users(message):
     if user_roles.get(message.chat.id) == 'admin':
@@ -388,6 +416,12 @@ def clean_user_data(chat_id):
     """Удаляем временные данные пользователя"""
     if chat_id in user_data:
         del user_data[chat_id]
+
+
+
+
+
+#Функция add_user
 @bot.message_handler(commands=['add_user'])
 def handle_add_user(message):
     if user_roles.get(message.chat.id) == 'admin':
@@ -446,6 +480,12 @@ def process_location_step(message):
         clean_user_data(chat_id)  # Всегда очищаем после обработки
 
 
+
+
+
+
+
+#Функция get_names
 @bot.message_handler(commands=['get_names'])
 def send_names_excel(message):
     try:
@@ -481,6 +521,12 @@ def send_names_excel(message):
         output.close() if 'output' in locals() else None
 
 
+
+
+
+
+
+#Функция remove_user
 @bot.message_handler(commands=['remove_user'])
 def handle_remove_user(message):
     if user_roles.get(message.chat.id) == 'admin':
@@ -535,6 +581,12 @@ def safe_escape_markdown(text: str) -> str:
     return escape_markdown(text)
 
 
+
+
+
+
+
+#Функция get_info
 @bot.message_handler(commands=['get_info'])
 def handle_get_info(message: types.Message):
     try:
@@ -590,6 +642,68 @@ def handle_get_info(message: types.Message):
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+
+
+
+
+
+#Функция remove_user
+@bot.message_handler(commands=['remove_link'])
+@admin_required
+@error_handler
+def start_remove_link(message):
+    chat_id = message.chat.id
+    user_data[chat_id] = {'step': 'remove_manager_id'}
+    bot.send_message(chat_id, "🔍 Введите ID менеджера для удаления связей:")
+
+
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'remove_manager_id')
+@admin_required
+@error_handler
+def process_remove_manager(message):
+    chat_id = message.chat.id
+    user_data[chat_id]['manager_id'] = message.text.strip()
+    user_data[chat_id]['step'] = 'remove_shop_id'
+    bot.send_message(chat_id, "🔍 Теперь введите ID магазина для удаления связи:")
+
+
+@bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'remove_shop_id')
+@admin_required
+@error_handler
+def process_remove_shop(message):
+    chat_id = message.chat.id
+    data = user_data[chat_id]
+
+    try:
+        # Чтение и фильтрация данных
+        df = pd.read_csv('shopofmanagers.csv')
+        initial_count = len(df)
+
+        # Фильтрация записей
+        mask = (df['id_manager'] == data['manager_id']) & (df['id_shop'] == message.text.strip())
+        df = df[~mask]
+
+        if len(df) == initial_count:
+            raise ValueError("Связь не найдена")
+
+        # Сохранение изменений
+        df.to_csv('shopofmanagers.csv', index=False)
+
+        # Формирование отчета
+        report = [
+            "✅ Связь успешно удалена:",
+            f"👨💼 ID менеджера: {data['manager_id']}",
+            f"🏪 ID магазина: {message.text.strip()}"
+        ]
+
+        bot.send_message(chat_id, "\n".join(report))
+
+    except Exception as e:
+        handle_error(message, e)
+    finally:
+        if chat_id in user_data:
+            del user_data[chat_id]
 
 #Функции менеджера
 @bot.message_handler(commands=['my_shops'])
