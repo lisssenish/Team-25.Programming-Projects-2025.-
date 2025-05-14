@@ -15,6 +15,15 @@ if os.path.exists('users.csv'):
     names = pd.read_csv('users.csv')
 else:
     names = pd.DataFrame(columns=['id', 'role', 'name', 'number'])
+    new_user = pd.DataFrame({
+        'id': ['A00001'],
+        'role': ['admin'],
+        'name': ['IgorSchenderovich'],
+        'number': [1]
+    })
+
+    # Добавляем нового пользователя в исходный DataFrame
+    names = pd.concat([names, new_user], ignore_index=True)
 if os.path.exists('shopofmanagers.csv'):
     shopofmanagers = pd.read_csv('shopofmanagers.csv')
 else:
