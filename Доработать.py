@@ -11,6 +11,21 @@ from datetime import datetime
 import threading
 import pathlib as path
 from openpyxl import load_workbook, Workbook
+from telebot.util import antiflood
+
+
+def protect_all_handlers(limit=15):
+    for handlers_list in bot.message_handlers:
+        for handler in handlers_list:
+            original_func = handler['function']
+
+            protected_func = antiflood(limit)(original_func)
+
+            handler['function'] = protected_func
+
+
+
+protect_all_handlers(limit=30)
 
 
 RIGHTS_FILE = '/content/drive/MyDrive/rights.xlsx'
