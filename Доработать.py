@@ -15,6 +15,10 @@ from openpyxl import load_workbook, Workbook
 RIGHTS_FILE = '/content/drive/MyDrive/rights.xlsx'
 REPORTS_DIR = "/content/drive/MyDrive/reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
+if os.path.exists('shopofmanagers.csv'):
+    shopofmanagers = pd.read_csv('shopofmanagers.csv')
+else:
+    shopofmanagers = pd.DataFrame(columns=['id_manager', 'name_manager', 'id_shop', 'name_shop'])
 def load_users():
     """Загрузка пользователей из файла"""
     if os.path.exists(RIGHTS_FILE):
