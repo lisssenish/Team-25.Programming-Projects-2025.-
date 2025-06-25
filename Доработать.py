@@ -12,6 +12,7 @@ import threading
 import pathlib as path
 from openpyxl import load_workbook, Workbook
 
+
 RIGHTS_FILE = '/content/drive/MyDrive/rights.xlsx'
 REPORTS_DIR = "/content/drive/MyDrive/reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
