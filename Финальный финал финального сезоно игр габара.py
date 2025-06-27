@@ -17,6 +17,7 @@ import time
 import asyncio
 import functools
 from typing import Callable, Any
+import matplotlib
 if os.path.exists('shopofmanagers.csv'):
     shopofmanagers = pd.read_csv('shopofmanagers.csv')
 else:
