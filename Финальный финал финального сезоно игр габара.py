@@ -136,6 +136,7 @@ def welcome_message(message):
 - Систематизировать информацию
 
 Введите команду /id для начала работы
+Введите /exit для полного завершения работы
     """
     bot.send_message(message.chat.id, welcome_text)
 
@@ -185,8 +186,8 @@ def process_user_id(message):
 
         # Формирование ответа
         responses = {
-            'admin': "👑 Администратор\nДоступные команды:\n/stats - статистика\n/users - управление пользователями",
-            'manager': "📊 Менеджер\nДоступные команды:\n/plan - установить план\n/statm - статистика\n/my_shops-ваши точки",
+            'admin': "👑 Администратор\nДоступные команды:\n/stats-получение статистики\n/users - управление пользователями\n",
+            'manager': "📊 Менеджер\nДоступные команды:\n/plan - установить план\n/report_of current_shop-получить отчёт по определённому магазину\n/my_shops-ваши точки",
             'shop': "🏪 Магазин\nДоступные команды:\n/report - сдать отчет"
         }
 
@@ -313,150 +314,289 @@ def find_user(id_str: str, role: str) -> pd.Series:
 
 
 
-
+@bot.message_handler(commands=['churkas'])
+def churkas(message):
+    chat_id=message.chat.id
+    bot.send_message(chat_id, "Вадим не отчисляйся пж, Илюха будет плакать")
 
 #Функция link_shop_to_manager
 @antispam
 @bot.message_handler(commands=['link_shop_to_manager'])
 @admin_required
-@check_session 
+@check_session
 @error_handler
 def start_linking(message):
     user_data[message.chat.id] = {'step': 'manager'}
-    bot.send_message(message.chat.id, "🔗 Введите ID менеджера (формат: M12345):")
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add("❌ Отменить привязку")
+
+    bot.send_message(
+        message.chat.id,
+        "🔗 *Начало привязки магазинов к менеджеру*\n\n"
+        "1️⃣ Введите *ID менеджера* в формате:\n"
+        "`M12345`\n\n"
+        "Для отмены нажмите кнопку ниже 👇",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
 
 
 @antispam
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'manager')
 @admin_required
-@check_session 
+@check_session
 @error_handler
 def process_manager(message):
+
     chat_id = message.chat.id
+
+    # Обработка отмены
+    if message.text == "❌ Отменить привязку":
+        del user_data[chat_id]
+        bot.send_message(chat_id, "❌ Привязка магазинов отменена", reply_markup=types.ReplyKeyboardRemove())
+        return
+
     try:
         raw_input = message.text.strip().upper()
         manager_id = validate_id(raw_input, 'manager')
         manager = find_user(manager_id, 'Manager')
 
+        # Сохраняем данные менеджера
         user_data[chat_id] = {
             'manager': {
                 'id': manager_id,
                 'name': manager['name']
             },
-            'shops': [],
+            'shops': [],  # Список для хранения магазинов
+            'linked_shops': set(),  # Множество для контроля дубликатов
             'step': 'shop'
         }
-        bot.send_message(chat_id, "🏪 Введите ID магазина (формат: S12345):")
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("❌ Отменить привязку")
+
+        bot.send_message(
+            chat_id,
+            f"✅ *Менеджер подтверждён:*\n"
+            f"ID: `{manager_id}`\n"
+            f"Имя: {manager['name']}\n\n"
+            "🏪 *Введите ID магазина для привязки* (формат: `S12345`)\n\n"
+            "📌 Можно привязать несколько магазинов. После каждого магазина "
+            "вы сможете добавить следующий или завершить процесс.\n\n"
+            "Для отмены нажмите кнопку ниже 👇",
+            parse_mode='Markdown',
+            reply_markup=markup
+        )
 
     except ValueError as ve:
-        bot.send_message(chat_id, f"❌ {str(ve)}")
-        start_linking(message)
+        bot.send_message(
+            chat_id,
+            f"❌ *Ошибка:* {str(ve)}\n\n"
+            "Повторите ввод ID менеджера в формате `M12345`:",
+            parse_mode='Markdown'
+        )
 
 
 @antispam
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'shop')
 @admin_required
-@check_session 
+@check_session
 @error_handler
 def process_shop(message):
     chat_id = message.chat.id
+
+    # Обработка отмены
+    if message.text == "❌ Отменить привязку":
+        del user_data[chat_id]
+        bot.send_message(chat_id, "❌ Привязка магазинов отменена", reply_markup=types.ReplyKeyboardRemove())
+        return
+
     try:
         raw_input = message.text.strip().upper()
         shop_id = validate_id(raw_input, 'shop')
         shop = find_user(shop_id, 'Shop')
+        manager_id = user_data[chat_id]['manager']['id']
 
-        # Проверка существующей связи
+        # Проверка 1: Уже привязан в текущей сессии
+        if shop_id in user_data[chat_id]['linked_shops']:
+            raise ValueError("Этот магазин уже добавлен в текущей сессии")
+
+        # Проверка 2: Уже привязан в базе данных
         exists = not shopofmanagers[
-            (shopofmanagers['id_manager'] == user_data[chat_id]['manager']['id']) &
+            (shopofmanagers['id_manager'] == manager_id) &
             (shopofmanagers['id_shop'] == shop_id)
             ].empty
 
         if exists:
-            raise ValueError("Связь уже существует")
+            raise ValueError("Магазин уже привязан к этому менеджеру в системе")
 
+        # Добавляем магазин
         user_data[chat_id]['shops'].append({
             'id': shop_id,
             'name': shop['name']
         })
+        user_data[chat_id]['linked_shops'].add(shop_id)  # Запоминаем ID
 
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        # Формируем список привязанных магазинов
+        shops_list = "\n".join(
+            [f"• {s['name']} (`{s['id']}`)" for s in user_data[chat_id]['shops']]
+        )
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         markup.add("➕ Добавить ещё магазин", "✅ Завершить привязку")
+        markup.add("❌ Отменить привязку")
 
         bot.send_message(
             chat_id,
-            f"✅ Успешно привязано к:\n{shop['name']}",
-            reply_markup=markup
+            f"✅ *Магазин успешно привязан:*\n"
+            f"Название: {shop['name']}\n"
+            f"ID: `{shop_id}`\n\n"
+            f"📋 *Текущий список привязанных магазинов:*\n{shops_list}\n\n"
+            "Выберите действие:",
+            reply_markup=markup,
+            parse_mode='Markdown'
         )
         user_data[chat_id]['step'] = 'confirmation'
 
     except ValueError as ve:
-        bot.send_message(chat_id, f"❌ {str(ve)}\nПовторите ввод ID магазина:")
+        error_msg = f"❌ *Ошибка:* {str(ve)}\n\n"
+        if "уже добавлен" in str(ve) or "уже привязан" in str(ve):
+            error_msg += "Введите ID другого магазина:"
+        else:
+            error_msg += "Повторите ввод ID магазина в формате `S12345`:"
+
+        bot.send_message(chat_id, error_msg, parse_mode='Markdown')
 
 
 @antispam
 @bot.message_handler(func=lambda m: user_data.get(m.chat.id, {}).get('step') == 'confirmation')
 @admin_required
-@check_session 
+@check_session
 @error_handler
 def finalize_linking(message):
     chat_id = message.chat.id
     data = user_data[chat_id]
 
-    if message.text == '➕ Добавить ещё магазин':
-        data['step'] = 'shop'
-        bot.send_message(chat_id, "🏪 Введите ID следующего магазина:")
+    # Обработка отмены
+    if message.text == "❌ Отменить привязку":
+        del user_data[chat_id]
+        bot.send_message(chat_id, "❌ Привязка магазинов отменена", reply_markup=types.ReplyKeyboardRemove())
         return
 
-    # Сохранение всех связей
-    new_entries = [{
-        'id_manager': data['manager']['id'],
-        'name_manager': data['manager']['name'],
-        'id_shop': shop['id'],
-        'name_shop': shop['name']
-    } for shop in data['shops']]
-    try:
-        pd.DataFrame(new_entries).to_csv(
-            'shopofmanagers.csv',
-            mode='a',
-            header=not pd.io.common.file_exists('shopofmanagers.csv'),
-            index=False
-        )
+    # Добавление еще одного магазина
+    if message.text == '➕ Добавить ещё магазин':
+        data['step'] = 'shop'
 
-        report = [
-                     f"🔗 Создано связей: {len(new_entries)}",
-                     f"👨💼 Менеджер: {data['manager']['name']}",
-                     "🏪 Магазины:"
-                 ] + [f"• {shop['name']}" for shop in data['shops']]
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("❌ Отменить привязку")
 
         bot.send_message(
             chat_id,
-            "\n".join(report),
-            reply_markup=types.ReplyKeyboardRemove()
+            "🏪 Введите ID следующего магазина в формате `S12345`:",
+            parse_mode='Markdown',
+            reply_markup=markup
         )
+        return
 
-    finally:
-        if chat_id in user_data:
-            del user_data[chat_id]
+    # Завершение привязки
+    if message.text == '✅ Завершить привязку':
+        try:
+            # Проверяем, есть ли магазины для привязки
+            if not data['shops']:
+                raise ValueError("Не добавлено ни одного магазина для привязки")
+
+            # Сохранение всех связей
+            new_entries = [{
+                'id_manager': data['manager']['id'],
+                'name_manager': data['manager']['name'],
+                'id_shop': shop['id'],
+                'name_shop': shop['name'],
+                'link_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            } for shop in data['shops']]
+
+            # Проверка перед сохранением
+            for entry in new_entries:
+                exists = not shopofmanagers[
+                    (shopofmanagers['id_manager'] == entry['id_manager']) &
+                    (shopofmanagers['id_shop'] == entry['id_shop'])
+                    ].empty
+
+                if exists:
+                    raise ValueError(f"Магазин {entry['name_shop']} ({entry['id_shop']}) уже привязан к менеджеру")
+
+            # Сохранение в файл
+            new_df = pd.DataFrame(new_entries)
+            if os.path.exists('shopofmanagers.csv'):
+                existing_df = pd.read_csv('shopofmanagers.csv')
+                updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+                updated_df.to_csv('shopofmanagers.csv', index=False)
+            else:
+                new_df.to_csv('shopofmanagers.csv', index=False)
+
+            # Формирование отчета
+            shops_list = "\n".join([f"• {shop['name']} (`{shop['id']}`)" for shop in data['shops']])
+
+            bot.send_message(
+                chat_id,
+                f"✅ *Привязка успешно завершена!*\n\n"
+                f"👤 Менеджер: {data['manager']['name']} (`{data['manager']['id']}`)\n\n"
+                f"🏪 Привязанные магазины ({shops_list})"
+                f"📅 Дата привязки: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+                parse_mode='Markdown',
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+
+        except ValueError as ve:
+            bot.send_message(
+                chat_id,
+                f"❌ *Ошибка сохранения:* {str(ve)}\n\n"
+                "Пожалуйста, начните процесс заново.",
+                parse_mode='Markdown',
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+        except Exception as e:
+            bot.send_message(
+                chat_id,
+                f"❌ *Критическая ошибка:* {str(e)}\n\n"
+                "Пожалуйста, повторите попытку позже.",
+                parse_mode='Markdown',
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+        finally:
+            if chat_id in user_data:
+                del user_data[chat_id]
 
 
 def handle_error(message, error):
+    """
+    ⚠️ Обрабатывает ошибки в процессе привязки
+    """
     chat_id = message.chat.id
-    error_msg = [
-        "⚠️ Произошла ошибка:",
-        f"• Тип: {type(error).__name__}",
-        f"• Описание: {str(error)}"
-    ]
+    error_type = type(error).__name__
 
-    bot.send_message(chat_id, "\n".join(error_msg))
-    bot.send_message(chat_id, "🔄 Сессия сброшена. Начните заново.")
+    # Специальная обработка для ValueError
+    if error_type == "ValueError":
+        bot.send_message(
+            chat_id,
+            f"❌ *Ошибка ввода данных:* {str(error)}\n\n"
+            "Пожалуйста, проверьте введенные данные и повторите попытку.",
+            parse_mode='Markdown'
+        )
+    else:
+        error_msg = [
+            "⚠️ *Произошла непредвиденная ошибка:*",
+            f"• Тип: `{error_type}`",
+            f"• Описание: {str(error)}"
+        ]
+        bot.send_message(chat_id, "\n".join(error_msg), parse_mode='Markdown')
 
+    # Сброс сессии и очистка данных
+    bot.send_message(chat_id, "🔄 Сессия привязки сброшена. Начните заново командой /link_shop_to_manager")
     if chat_id in user_data:
         del user_data[chat_id]
 
-
-
-
-
+    # Удаление клавиатуры
+    bot.send_message(chat_id, "⌨️ Клавиатура сброшена", reply_markup=types.ReplyKeyboardRemove())
 
 #Функция get_links
 @antispam
@@ -525,12 +665,7 @@ def get_links_command(message):
 @bot.message_handler(commands=['stats'])
 def handle_stats(message):
     if user_roles.get(message.chat.id) == 'admin':
-        stats_text = """
-📊 Статистика системы:
-- Всего пользователей: 143
-- Активных магазинов: 67
-- Выполнение плана: 82%
-        """
+        stats_text = 'Доступные функции:\n/reports-получение общего отчёта\n/report_current-получение отчёта за текущий месяц'
         bot.send_message(message.chat.id, stats_text)
     else:
         bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права администратора")
@@ -655,7 +790,6 @@ def process_month_selection(message):
 @antispam
 @bot.message_handler(commands=['reports_current'])
 def handle_reports_current(message):
-    """Отправка отчета за текущий месяц"""
     try:
         if user_roles.get(message.chat.id) != 'admin':
             bot.send_message(message.chat.id, "⛔ Требуются права администратора!")
@@ -1301,10 +1435,7 @@ def handle_get_plans(message):
 @check_session
 def handle_users(message):
     if user_roles.get(message.chat.id) == 'manager':
-        users_text = """
-План магазина А: 87% 1009290202 из 10019189101
-План магазина Б: 87% 10002 из 10019189101
-        """
+        users_text = '/reports_of_selected_shop-получить отчёт по определенной точке'
         bot.send_message(message.chat.id, users_text)
     else:
         bot.send_message(message.chat.id, "⛔ Доступ запрещён! Требуются права менеджера")
@@ -1522,6 +1653,327 @@ def add_to_df(chat_id):
         raise ValueError("Нет прав на запись файла. Закройте файл Excel и попробуйте снова.")
     except Exception as e:
         raise ValueError(f"Ошибка при сохранении в Excel: {str(e)}")
+
+
+@bot.message_handler(commands=['reporting_schedule'])
+def handler_reporting_schedule(message):
+    try:
+        role = user_roles.get(message.chat.id)
+        if role not in ['manager', 'admin']:
+            bot.send_message(message.chat.id, "⛔ Требуются права менеджера или администратора!")
+            return
+
+        if role == 'admin':
+            # Загружаем данные о пользователях
+            df_rights = load_users()
+
+            # Фильтруем только магазины (роль 'shop')
+            df_shops = df_rights[df_rights['role'].str.lower() == 'shop']
+
+            if df_shops.empty:
+                raise ValueError("❌ В системе нет магазинов")
+
+            # Формируем список магазинов
+            shops = []
+            for _, row in df_shops.iterrows():
+                shops.append({
+                    'id_shop': row['id'],
+                    'name_shop': row['name']
+                })
+
+            # Сохраняем список магазинов для пользователя
+            user_data[message.chat.id] = {
+                'step': 'admin_select_shop',
+                'shops': shops
+            }
+
+            # Создаем клавиатуру с магазинами
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            markup.add("Все магазины")
+            for shop in shops:
+                markup.add(shop['name_shop'])
+
+            bot.send_message(message.chat.id, "🏪 Выберите магазин:", reply_markup=markup)
+            bot.register_next_step_handler(message, process_admin_shop_selection_schedule)
+            return
+        if role == 'manager':
+            manager_id = user_chat_id.get(message.chat.id)
+            if not manager_id:
+                raise ValueError("ID менеджера не найден")
+
+            if not os.path.exists('shopofmanagers.csv'):
+                raise FileNotFoundError("Файл связей не найден")
+
+            df_links = pd.read_csv('shopofmanagers.csv')
+            manager_shops = df_links[df_links['id_manager'] == manager_id]
+
+            if manager_shops.empty:
+                raise ValueError("За вами не закреплено ни одного магазина")
+
+            user_data[message.chat.id] = {
+                'step': 'manager_select_shop',
+                'shops': manager_shops[['id_shop', 'name_shop']].to_dict('records')
+            }
+
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+            for shop in user_data[message.chat.id]['shops']:
+                markup.add(shop['name_shop'])
+
+            bot.send_message(message.chat.id, "🏪 Выберите магазин:", reply_markup=markup)
+            bot.register_next_step_handler(message, process_manager_shop_selection_schedule)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+        if message.chat.id in user_data:
+            del user_data[message.chat.id]
+
+
+def process_admin_shop_selection_schedule(message):
+    try:
+        chat_id = message.chat.id
+        user_info = user_data.get(chat_id, {})
+        if user_info.get('step') != 'admin_select_shop':
+            raise ValueError("Неверная последовательность команд")
+
+        shop_name = message.text
+        shops = user_info.get('shops', [])
+
+        # Сохраняем выбранный магазин или "Все магазины"
+        user_data[chat_id] = {
+            'step': 'select_year',
+            'role': 'admin',
+            'shop_name': shop_name
+        }
+
+        if shop_name != "Все магазины":
+            # Ищем выбранный магазин в списке
+            selected_shop = next((shop for shop in shops if shop['name_shop'] == shop_name), None)
+            if not selected_shop:
+                raise ValueError("Магазин не найден")
+            user_data[chat_id]['shop_id'] = selected_shop['id_shop']
+
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+        current_year = datetime.now().year
+        markup.add(str(current_year), str(current_year - 1))
+
+        bot.send_message(chat_id, "📅 Выберите год:", reply_markup=markup)
+        bot.register_next_step_handler(message, process_year_selection_schedule)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+        if chat_id in user_data:
+            del user_data[chat_id]
+
+
+def process_manager_shop_selection_schedule(message):
+    try:
+        chat_id = message.chat.id
+        user_info = user_data.get(chat_id, {})
+        if user_info.get('step') != 'manager_select_shop':
+            raise ValueError("Неверная последовательность команд")
+
+        selected_shop = next((shop for shop in user_info['shops'] if shop['name_shop'] == message.text), None)
+        if not selected_shop:
+            raise ValueError("Магазин не найден")
+
+        user_data[chat_id] = {
+            'step': 'select_year',
+            'role': 'manager',
+            'shop_id': selected_shop['id_shop'],
+            'shop_name': selected_shop['name_shop']
+        }
+
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+        current_year = datetime.now().year
+        markup.add(str(current_year), str(current_year - 1))
+
+        bot.send_message(chat_id, "📅 Выберите год:", reply_markup=markup)
+        bot.register_next_step_handler(message, process_year_selection_schedule)
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка: {str(e)}")
+        if chat_id in user_data:
+            del user_data[chat_id]
+
+
+def process_year_selection_schedule(message):
+    try:
+        chat_id = message.chat.id
+        user_info = user_data.get(chat_id, {})
+        if user_info.get('step') != 'select_year':
+            raise ValueError("Неверная последовательность команд")
+
+        if message.text not in [str(datetime.now().year), str(datetime.now().year - 1)]:
+            raise ValueError("Недопустимый год")
+
+        user_data[chat_id] = {
+            **user_info,
+            'step': 'select_month',
+            'year': int(message.text)
+        }
+
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True, row_width=3)
+        months = [
+            "1️⃣ Январь", "2️⃣ Февраль", "3️⃣ Март",
+            "4️⃣ Апрель", "5️⃣ Май", "6️⃣ Июнь",
+            "7️⃣ Июль", "8️⃣ Август", "9️⃣ Сентябрь",
+            "🔟 Октябрь", "1️⃣1️⃣ Ноябрь", "1️⃣2️⃣ Декабрь"
+        ]
+        markup.add(*months)
+
+        bot.send_message(chat_id, "📅 Выберите месяц:", reply_markup=markup)
+        bot.register_next_step_handler(message, process_month_selection_schedule)
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка: {str(e)}")
+        if chat_id in user_data:
+            del user_data[chat_id]
+
+
+def process_month_selection_schedule(message):
+    try:
+        chat_id = message.chat.id
+        user_info = user_data.get(chat_id, {})
+        if user_info.get('step') != 'select_month' or 'year' not in user_info:
+            raise ValueError("Неверная последовательность команд")
+
+        month_map = {
+            "1️⃣": 1, "2️⃣": 2, "3️⃣": 3, "4️⃣": 4, "5️⃣": 5, "6️⃣": 6,
+            "7️⃣": 7, "8️⃣": 8, "9️⃣": 9, "🔟": 10, "1️⃣1️⃣": 11, "1️⃣2️⃣": 12
+        }
+
+        month_emoji = message.text.split()[0]
+        month_num = month_map.get(month_emoji)
+
+        if not month_num:
+            raise ValueError("Недопустимый месяц")
+
+        file_name = f"reports_{user_info['year']}_{month_num:02d}.xlsx"
+        file_path = os.path.join(REPORTS_DIR, file_name)
+
+        if not os.path.exists(file_path):
+            bot.send_message(chat_id, "❌ Файл отчетов за указанный период не найден!",
+                             reply_markup=types.ReplyKeyboardRemove())
+            return
+
+        month_names = [
+            "январь", "февраль", "март", "апрель", "май", "июнь",
+            "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"
+        ]
+        month_name = month_names[month_num - 1]
+
+        all_sheets = pd.read_excel(file_path, sheet_name=None)
+        plot_data = []
+
+        for sheet_name, df in all_sheets.items():
+            try:
+                date = datetime.strptime(sheet_name, "%Y-%m-%d")
+            except:
+                continue
+
+            if 'shop_id' in user_info:
+                shop_id = user_info['shop_id']
+                if 'id магазина' in df.columns:
+                    df = df[df['id магазина'] == shop_id]
+
+            if not df.empty and 'Наличные' in df.columns and 'Безналичные' in df.columns:
+                total_revenue = df['Наличные'].sum() + df['Безналичные'].sum()
+                plot_data.append({
+                    'date': date,
+                    'revenue': total_revenue
+                })
+
+        if not plot_data:
+            bot.send_message(chat_id, "❌ Нет данных для построения графика",
+                             reply_markup=types.ReplyKeyboardRemove())
+            return
+
+        # Сортируем данные по дате
+        plot_data.sort(key=lambda x: x['date'])
+        dates = [d['date'].strftime("%d.%m") for d in plot_data]
+        revenues = [d['revenue'] for d in plot_data]
+        positions = range(len(dates))
+
+        sorted_revenues = sorted(revenues)
+        n = len(sorted_revenues)
+        median_value = sorted_revenues[n // 2] if n % 2 == 1 else (sorted_revenues[n // 2 - 1] + sorted_revenues[
+            n // 2]) / 2
+
+        # Создаем фигуру для графика
+        plt.figure(figsize=(12, 6))
+
+        # Рисуем линию медианного значения
+        plt.axhline(
+            y=median_value,
+            color='red',
+            linestyle='--',
+            linewidth=2,
+            alpha=0.7,
+            label=f'Медиана: {median_value:,.0f}'.replace(',', ' ')
+        )
+        # Рисуем точки с соединением линиями
+        plt.plot(
+            positions,
+            revenues,
+            'o-',  # Кружки с соединительными линиями
+            color='blue',
+            markersize=8,  # Размер точек
+            linewidth=2,  # Толщина линии
+            alpha=0.8  # Прозрачность
+        )
+
+        # Добавляем подписи значений над точками
+        for i, revenue in enumerate(revenues):
+            plt.annotate(
+                f'{revenue:,.0f}'.replace(',', ' '),  # Форматирование с пробелом как разделителем тысяч
+                (i, revenue),
+                textcoords="offset points",
+                xytext=(0, 10),  # Смещение над точкой
+                ha='center',  # Горизонтальное выравнивание по центру
+                fontsize=9
+            )
+
+        plt.xlabel('Дни месяца')
+        plt.ylabel('Сумма выручки, руб.')
+
+        # Формируем заголовок
+        if user_info.get('role') == 'manager':
+            title = f'Выручка магазина {user_info["shop_name"]} за {month_name} {user_info["year"]} года'
+        else:
+            if 'shop_name' in user_info and user_info['shop_name'] == "Все магазины":
+                title = f'Выручка всех магазинов за {month_name} {user_info["year"]} года'
+            else:
+                title = f'Выручка магазина {user_info["shop_name"]} за {month_name} {user_info["year"]} года'
+
+        plt.title(title)
+        plt.grid(True, linestyle='--', alpha=0.5)
+
+        # Настраиваем ось X
+        plt.xticks(positions, dates, rotation=45)
+        plt.tight_layout()
+
+        # Сохраняем график
+        temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name
+        plt.savefig(temp_file, dpi=150)
+        plt.close()
+
+        # Отправляем график
+        with open(temp_file, 'rb') as photo:
+            bot.send_photo(
+                chat_id,
+                photo,
+                caption=f"📊 График выручки за {month_name} {user_info['year']} года",
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+
+        # Удаляем временный файл
+        os.remove(temp_file)
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка при построении графика: {str(e)}")
+    finally:
+        if chat_id in user_data:
+            del user_data[chat_id]
 if __name__ == '__main__':
     print('Бот запущен...')
     bot.infinity_polling()
